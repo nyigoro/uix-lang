@@ -74,6 +74,7 @@ String
 
 Char
   = '\\"' { return '"' }
+  / '\\\\' { return '\\' }
   / [^"]
 
 _ "whitespace"
