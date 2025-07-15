@@ -75,7 +75,7 @@ String
 Char
   = '\\"'  { return '"'; }
   / '\\\\' { return '\\'; }
-  / [^"\\] { return text(); } // Corrected: Matches any character except " or \
+  / [^"\\] { return text(); }
 
 _ "whitespace"
   = [ \t\n\r]*
