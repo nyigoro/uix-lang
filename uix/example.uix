@@ -1,7 +1,13 @@
 App {
-  Title(text: "Hello UIX")
-  Row {
-    Button(text: "Click Me", onClick: greet)
-    Input(placeholder: "Enter name", bind: name)
+  Title(text: "User List")
+
+  for(user in users) {
+    Row {
+      Text(text: user.name)
+    }
+  }
+
+  if(showMore) {
+    Button(text: "Show More", onClick: toggle)
   }
 }
