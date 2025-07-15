@@ -73,9 +73,9 @@ String
   = "\"" chars:Char* "\"" { return chars.join(""); }
 
 Char
-  = '\\"' { return '"' }
-  / '\\\\' { return '\\' }
-  / [^"]
+  = '\\"'  { return '"'; }
+  / '\\\\' { return '\\'; }
+  / [^"\\] { return text(); } // Corrected: Matches any character except " or \
 
 _ "whitespace"
   = [ \t\n\r]*
