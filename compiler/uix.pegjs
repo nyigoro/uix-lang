@@ -61,11 +61,10 @@ Prop
       return [key, value];
     }
 
-Value
-  = String / Identifier
+Value = String / Expression
 
-Identifier
-  = $([a-zA-Z_][a-zA-Z0-9_]*)
+Expression
+  = $([a-zA-Z_][a-zA-Z0-9_]*(("." [a-zA-Z_][a-zA-Z0-9_]*)*))
 
 String
   = "\"" chars:Char* "\"" { return chars.join(""); }
