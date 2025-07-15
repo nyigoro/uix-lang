@@ -73,7 +73,7 @@ String
   = "\"" chars:Char* "\"" { return chars.join(""); }
 
 Char
-  = "\\" "\"" { return "\"" }
+  = '\\"' { return '"' }
   / [^"]
 
 _ "whitespace"
