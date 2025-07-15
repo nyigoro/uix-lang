@@ -51,4 +51,4 @@ Char
   / [^"]
 
 _ "whitespace"
-  = [ \t\n\r]*  // ✅ skip any whitespace
+  = [ \t\n\r]*
