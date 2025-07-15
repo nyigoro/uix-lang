@@ -2,6 +2,13 @@ import fs from "fs";
 import * as parser from "./parser.js";
 
 const code = fs.readFileSync("uix/example.uix", "utf-8");
+const tagMap = {
+  App: "div",
+  Title: "h1",
+  Row: "div",
+  Button: "button",
+  Input: "input"
+};
 const ast = parser.parse(code);
 
 // Converts a props object to JSX string
@@ -24,16 +31,18 @@ function capitalize(str) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
-// Recursive JSX generation
+// Generate JSX for the entire AST
 function generateJSX(node, indent = "  ") {
   const { type, props, children } = node;
+  const jsxTag = tagMap[type] || type; // ← translate to real tag
   const propStr = renderProps(props);
+
   if (!children || children.length === 0) {
-    return `${indent}<${type}${propStr ? " " + propStr : ""} />`;
+    return `${indent}<${jsxTag}${propStr ? " " + propStr : ""} />`;
   }
 
   const inner = children.map(child => generateJSX(child, indent + "  ")).join("\n");
-  return `${indent}<${type}${propStr ? " " + propStr : ""}>\n${inner}\n${indent}</${type}>`;
+  return `${indent}<${jsxTag}${propStr ? " " + propStr : ""}>\n${inner}\n${indent}</${jsxTag}>`;
 }
 
 const jsxBody = ast.map(node => generateJSX(node)).join("\n");

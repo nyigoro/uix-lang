@@ -4,13 +4,13 @@ import React from "react";
 export default function CompiledUI({ name, setName, greet }) {
   return (
     <>
-  <App>
-    <Title text="Hello UIX" />
-    <Row>
-      <Button text="Click Me" onClick={greet} />
-      <Input placeholder="Enter name" value={name} onChange={e => setName(e.target.value)} />
-    </Row>
-  </App>
+  <div>
+    <h1 text="Hello UIX" />
+    <div>
+      <button text="Click Me" onClick={greet} />
+      <input placeholder="Enter name" value={name} onChange={e => setName(e.target.value)} />
+    </div>
+  </div>
     </>
   );
 }
