@@ -1,10 +1,29 @@
+{{
+  // Helper function to convert a parsed Term object into its JavaScript string representation
+  // This is used by the Expression rule to build a valid JS string for concatenation.
+  function formatTermForJs(term) {
+    if (term.type === 'string') {
+      return JSON.stringify(term.value); // Properly quote string literals for JS
+    } else if (term.type === 'number') {
+      return term.value.toString(); // Numbers are fine as-is in JS
+    } else if (term.type === 'identifier') {
+      return term.value; // Identifiers are fine as-is in JS
+    }
+    // Fallback for unexpected types, though all terms should be handled above
+    return String(term);
+  }
+}}
+
 Start
-  = _ items:(ComponentDefinition / AppElement)* _ {
-      // Separate components and app element after parsing
-      const components = items.filter(item => item.type === "ComponentDefinition");
-      const app = items.find(item => item.type === "App");
+  = items:(TopLevelItem)* _ { // Allow zero or more top-level items, followed by optional trailing whitespace for the whole file
+      const allItems = items;
+      const components = allItems.filter(item => item.type === "ComponentDefinition");
+      const app = allItems.find(item => item.type === "App");
       return { components: components, app: app };
     }
+
+TopLevelItem // Each top-level item consumes its own leading and trailing whitespace
+  = _ item:(ComponentDefinition / AppElement) _ { return item; }
 
 ComponentDefinition
   = "component" _ name:Identifier _ "(" params:ParameterList? ")" _ body:Block {
@@ -28,14 +47,8 @@ Element
 
 StandardElement
   = name:Identifier _ props:Props? _ children:Block? {
-      // Ensure 'App' is not matched here, as it's now AppElement
-      if (name === "App") {
-        // This error should ideally not be hit if AppElement is correctly parsed at top-level
-        // but acts as a safeguard.
-        error("Unexpected 'App' element here. 'App' should be a top-level declaration.");
-      }
       return {
-        type: name,
+        type: name.value, // Return the string value of the identifier
         props: props ?? {},
         children: children ?? []
       };
@@ -82,19 +95,47 @@ PropList
 
 Prop
   = key:Identifier _ ":" _ value:Value {
-      return [key, value];
+      return [key.value, value]; // Store key as its string value
     }
 
-Value = String / Expression
+Value // Can be a simple String, Number, or a complex Expression
+  = String / Number / Expression
 
 Expression
-  = val:$(Identifier ("." Identifier)*) { return { type: 'expression', value: val }; }
+  = first:Term rest:(_ "+" _ Term)* {
+      let resultParts = [];
+      resultParts.push(formatTermForJs(first));
+      for (const r of rest) {
+        resultParts.push(" + "); // Add the operator as a literal string
+        resultParts.push(formatTermForJs(r[3]));
+      }
+      return { type: 'expression', value: resultParts.join("") };
+    }
+
+Term
+  = IdentifierWithAccess / String / Number
+
+IdentifierWithAccess
+  = base:Identifier access:("." Identifier ("(" _ ")")? )* { // Added optional () for method calls
+      let fullNameParts = [base.value];
+      access.forEach(a => {
+        fullNameParts.push(a[1].value + (a[2] ? "()" : ""));
+      });
+      return { type: 'identifier', value: fullNameParts.join(".") };
+    }
 
 Identifier
-  = $([a-zA-Z_][a-zA-Z0-9_]*)
+  = $([a-zA-Z_][a-zA-Z0-9_]*) { return { type: 'identifier', value: text() }; } // Return object for Identifier
 
 String
-  = "\"" chars:Char* "\"" { return chars.join(""); }
+  = "\"" chars:Char* "\"" {
+      return { type: 'string', value: chars.join("") };
+    }
+
+Number
+  = digits:$([0-9]+) {
+      return { type: 'number', value: parseInt(digits, 10) };
+    }
 
 Char
   = '\\"'  { return '"'; }

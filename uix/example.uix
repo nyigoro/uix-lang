@@ -1,10 +1,9 @@
-App {
-  UserCard(name: "Alice")
-  UserCard(name: "Bob")
+component Avatar(name, age) {
+  Text(text: name + " is " + age + " years old")
 }
 
-component UserCard(name) {
-  Row {
-    Text(text: name)
+App {
+  for (user in users) {
+    Avatar(name: user.name, age: user.age)
   }
 }

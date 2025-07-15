@@ -1,9 +1,13 @@
+// UIX Compiler with Integrated Props Validation System
 import fs from "fs";
 import * as parser from "./parser.js";
 
+// Import the validation system
+import { UIXSchema, UIXValidator, UIXComponentValidator, UIXValidationError } from './uix-validation.js';
+
 const code = fs.readFileSync("uix/example.uix", "utf-8");
 const tagMap = {
-  App: "div", // This mapping for 'App' is now primarily for internal reference, not direct JSX tag generation for the root.
+  // App is now a special top-level construct, not a generic div
   Title: "h1",
   Row: "div",
   Button: "button",
@@ -11,35 +15,273 @@ const tagMap = {
   Text: "span"
 };
 
-const ast = parser.parse(code);
-// console.log("--- DEBUG: Parsed AST ---");
-// console.log(JSON.stringify(ast, null, 2));
-// console.log("--- END DEBUG ---");
+// Built-in component validation schemas
+const builtInValidationSchemas = {
+  Title: {
+    text: UIXSchema.string({ required: true }),
+    className: UIXSchema.optional(UIXSchema.string()),
+    id: UIXSchema.optional(UIXSchema.string())
+  },
+  Row: {
+    className: UIXSchema.optional(UIXSchema.string()),
+    style: UIXSchema.optional(UIXSchema.string()),
+    onClick: UIXSchema.optional(UIXSchema.function())
+  },
+  Button: {
+    text: UIXSchema.string({ required: true }),
+    onClick: UIXSchema.function({ required: true }),
+    disabled: UIXSchema.optional(UIXSchema.boolean(), false),
+    type: UIXSchema.optional(UIXSchema.enum(['button', 'submit', 'reset']), 'button'),
+    className: UIXSchema.optional(UIXSchema.string()),
+    variant: UIXSchema.optional(UIXSchema.enum(['primary', 'secondary', 'danger', 'success']), 'primary')
+  },
+  Input: {
+    bind: UIXSchema.optional(UIXSchema.string()),
+    initial: UIXSchema.optional(UIXSchema.union([UIXSchema.string(), UIXSchema.number()])),
+    type: UIXSchema.optional(UIXSchema.enum(['text', 'email', 'password', 'number', 'tel', 'url']), 'text'),
+    placeholder: UIXSchema.optional(UIXSchema.string()),
+    required: UIXSchema.optional(UIXSchema.boolean(), false),
+    disabled: UIXSchema.optional(UIXSchema.boolean(), false),
+    minLength: UIXSchema.optional(UIXSchema.number({ min: 0 })),
+    maxLength: UIXSchema.optional(UIXSchema.number({ min: 1 })),
+    pattern: UIXSchema.optional(UIXSchema.string())
+  },
+  Text: {
+    text: UIXSchema.string({ required: true }),
+    className: UIXSchema.optional(UIXSchema.string()),
+    style: UIXSchema.optional(UIXSchema.string())
+  }
+};
+
+// Component validation registry
+const componentValidators = new Map();
+
+// Register built-in component validators
+Object.entries(builtInValidationSchemas).forEach(([componentName, schema]) => {
+  componentValidators.set(componentName, new UIXComponentValidator(componentName, schema));
+});
+
+const parsedAst = parser.parse(code);
 
 // Tracking
 const usedIdentifiers = new Set();
-const bindCandidates = new Map(); // Stores varName -> initialValue for all 'bind' targets found in AST
+const bindCandidates = new Map();
+const componentParameters = new Set();
+
+// Custom component definitions with validation
+const customComponentDefinitions = new Map();
 
 function capitalize(str) {
-  if (typeof str === "object" && str !== null && str.type === "expression") {
-    str = str.value;
-  }
-  return typeof str === "string" ? str.charAt(0).toUpperCase() + str.slice(1) : "";
+  const actualStr = (typeof str === "object" && str !== null && str.value !== undefined) ? str.value : str;
+  return typeof actualStr === "string" ? actualStr.charAt(0).toUpperCase() + actualStr.slice(1) : "";
 }
 
 function extractIdentifiers(value) {
-  if (typeof value === "object" && value !== null && value.type === "expression") {
-    value = value.value;
-  }
-  if (typeof value === "string" && /^[a-zA-Z_$][a-zA-Z0-9_$.]*$/.test(value)) {
+  if (typeof value === "object" && value !== null) {
+    if (value.type === 'expression' || value.type === 'identifier') {
+      const parts = value.value.split(/[\. \( \+]/)[0];
+      if (parts && /^[a-zA-Z_$][a-zA-Z0-9_]*$/.test(parts)) {
+        usedIdentifiers.add(parts);
+      }
+    } else if (value.type === 'string' || value.type === 'number') {
+      return;
+    }
+  } else if (typeof value === "string" && /^[a-zA-Z_$][a-zA-Z0-9_$.]*$/.test(value)) {
     const parts = value.split(".");
-    usedIdentifiers.add(parts[0]); // Add the root identifier (e.g., 'user' from 'user.name')
+    usedIdentifiers.add(parts[0]);
   }
 }
 
-// Function to recursively collect all bind candidates and used identifiers from the AST
+// Enhanced component definition processing with validation schema inference
+function processComponentDefinition(compDef) {
+  const componentName = compDef.name.value;
+  const componentParams = compDef.params.map(p => p.value);
+  
+  // Store component definition for validation
+  customComponentDefinitions.set(componentName, {
+    name: componentName,
+    params: componentParams,
+    body: compDef.body
+  });
+  
+  // Infer validation schema from component usage patterns
+  const inferredSchema = inferValidationSchema(compDef);
+  
+  // Register validator for this custom component
+  componentValidators.set(componentName, new UIXComponentValidator(componentName, inferredSchema));
+  
+  return { componentName, componentParams, inferredSchema };
+}
+
+// Infer validation schema from component definition
+function inferValidationSchema(compDef) {
+  const schema = {};
+  const componentParams = compDef.params.map(p => p.value);
+  
+  // Analyze component body to infer prop types
+  componentParams.forEach(param => {
+    // Start with a flexible schema - we'll refine based on usage
+    schema[param] = UIXSchema.any({ required: true });
+    
+    // Analyze usage patterns in the component body
+    const usage = analyzeParameterUsage(param, compDef.body);
+    
+    if (usage.usedAsText) {
+      schema[param] = UIXSchema.string({ required: true });
+    } else if (usage.usedAsNumber) {
+      schema[param] = UIXSchema.number({ required: true });
+    } else if (usage.usedAsBoolean) {
+      schema[param] = UIXSchema.boolean({ required: true });
+    } else if (usage.usedAsArray) {
+      schema[param] = UIXSchema.array({ 
+        required: true, 
+        items: UIXSchema.any() 
+      });
+    } else if (usage.usedAsFunction) {
+      schema[param] = UIXSchema.function({ required: true });
+    }
+    
+    // Check if parameter has default values or is optional
+    if (usage.hasDefaultValue || usage.conditionalUsage) {
+      schema[param] = UIXSchema.optional(schema[param]);
+    }
+  });
+  
+  return schema;
+}
+
+// Analyze how a parameter is used within a component body
+function analyzeParameterUsage(param, body) {
+  const usage = {
+    usedAsText: false,
+    usedAsNumber: false,
+    usedAsBoolean: false,
+    usedAsArray: false,
+    usedAsFunction: false,
+    hasDefaultValue: false,
+    conditionalUsage: false
+  };
+  
+  function analyzeNode(node) {
+    if (!node) return;
+    
+    // Check props for parameter usage
+    if (node.props) {
+      Object.entries(node.props).forEach(([key, value]) => {
+        if (typeof value === 'object' && value !== null && 
+            (value.type === 'expression' || value.type === 'identifier')) {
+          
+          if (value.value === param) {
+            // Direct parameter usage
+            if (key === 'text') usage.usedAsText = true;
+            if (key === 'onClick' || key === 'onSubmit') usage.usedAsFunction = true;
+            if (key === 'disabled' || key === 'required') usage.usedAsBoolean = true;
+          } else if (value.value.includes(param)) {
+            // Parameter used in expressions
+            if (value.value.includes(`${param}.map`) || value.value.includes(`${param}.length`)) {
+              usage.usedAsArray = true;
+            }
+            if (value.value.includes(`${param}.toString()`) || value.value.includes(`${param}.toUpperCase()`)) {
+              usage.usedAsText = true;
+            }
+            if (value.value.includes(`${param} ===`) || value.value.includes(`${param} !==`)) {
+              usage.usedAsBoolean = true;
+            }
+            
+            if (value.value.includes(`${param}(`) || value.value.includes(`${param}.call`)) {
+              usage.usedAsFunction = true;
+            }
+          }
+        }
+      });
+    }
+    
+    // Check for conditional usage
+    if (node.type === 'If' && node.condition && 
+        typeof node.condition === 'object' && node.condition.value && 
+        node.condition.value.includes(param)) {
+      usage.conditionalUsage = true;
+    }
+    
+    // Check for array usage in For loops
+    if (node.type === 'For' && node.list && 
+        typeof node.list === 'object' && node.list.value === param) {
+      usage.usedAsArray = true;
+    }
+    
+    // Recursively analyze children
+    if (node.children) {
+      node.children.forEach(analyzeNode);
+    }
+    if (node.body) {
+      node.body.forEach(analyzeNode);
+    }
+  }
+  
+  body.forEach(analyzeNode);
+  return usage;
+}
+
+// Enhanced props validation during compilation
+function validateProps(componentName, props) {
+  const validator = componentValidators.get(componentName);
+  if (!validator) {
+    console.warn(`⚠️  No validator found for component: ${componentName}`);
+    return props; // Return original props if no validator
+  }
+  
+  try {
+    // Convert UIX AST props to plain JavaScript objects for validation
+    const plainProps = {};
+    
+    if (props) {
+      Object.entries(props).forEach(([key, value]) => {
+        if (typeof value === 'object' && value !== null) {
+          if (value.type === 'string') {
+            plainProps[key] = value.value;
+          } else if (value.type === 'number') {
+            plainProps[key] = value.value;
+          } else if (value.type === 'expression' || value.type === 'identifier') {
+            // For expressions, we'll validate at runtime, but check basic structure
+            plainProps[key] = value.value;
+          }
+        } else {
+          plainProps[key] = value;
+        }
+      });
+    }
+    
+    // Validate props
+    const validatedProps = validator.validate(plainProps);
+    
+    console.log(`✅ Props validated for ${componentName}:`, Object.keys(validatedProps));
+    return props; // Return original AST props for further processing
+    
+  } catch (error) {
+    if (error instanceof UIXValidationError) {
+      console.error(`❌ Validation error in ${componentName}:`, error.message);
+      
+      // In development, we might want to halt compilation
+      if (process.env.NODE_ENV === 'development') {
+        throw new Error(`UIX Compilation failed due to validation error in ${componentName}: ${error.message}`);
+      }
+      
+      // In production, log error but continue with original props
+      console.warn(`⚠️  Continuing compilation despite validation error in ${componentName}`);
+      return props;
+    }
+    throw error;
+  }
+}
+
+// Function to recursively collect all bind candidates and used identifiers from a given AST node or subtree
 function collectAllIdentifiers(node) {
   if (!node) return;
+
+  // Validate props if this is a component with a validator
+  if (node.type && componentValidators.has(node.type)) {
+    validateProps(node.type, node.props);
+  }
 
   // Handle props for standard elements
   if (node.props) {
@@ -47,248 +289,56 @@ function collectAllIdentifiers(node) {
       if (key === "bind") {
         if (typeof value === 'object' && value !== null && value.type === 'expression') {
           const varName = value.value;
-          if (/^[a-zA-Z_$][a-zA-Z0-9_]*$/.test(varName)) { // Ensure it's a simple identifier
+          if (/^[a-zA-Z_$][a-zA-Z0-9_]*$/.test(varName)) {
             const initialValue = node.props.initial !== undefined
-              ? (typeof node.props.initial === 'object' && node.props.initial !== null && node.props.initial.type === 'expression' ? node.props.initial.value : node.props.initial)
+              ? (typeof node.props.initial === 'object' && node.props.initial !== null && (node.props.initial.type === 'expression' || node.props.initial.type === 'string' || node.props.initial.type === 'number') ? node.props.initial.value : node.props.initial)
               : "";
             bindCandidates.set(varName, initialValue);
-            usedIdentifiers.add(varName); // Mark the variable itself as used
-            usedIdentifiers.add(`set${capitalize(varName)}`); // Mark its setter as used
+            usedIdentifiers.add(varName);
+            usedIdentifiers.add(`set${capitalize(varName)}`);
           } else {
             console.warn(`Warning: 'bind' prop requires a simple identifier string. Found: '${varName}'.`);
           }
         }
-      } else if (key !== "text" && key !== "initial" && key !== "bindDefault") { // 'text', 'initial', 'bindDefault' are handled elsewhere or internal
-        // For other props, if they are expressions, extract their identifiers
-        if (typeof value === 'object' && value !== null && value.type === 'expression') {
-          extractIdentifiers(value.value);
-        } else if (typeof value === 'string' && key.startsWith("on")) {
-          // For simple string event handlers like onClick: greet, extract 'greet'
-          extractIdentifiers(value);
-        }
+      } else if (key !== "text" && key !== "initial" && key !== "bindDefault") {
+        extractIdentifiers(value);
       }
     }
   }
 
   // Handle If block condition
   if (node.type === "If" && node.condition) {
-    extractIdentifiers(node.condition.value);
+    extractIdentifiers(node.condition);
   }
 
   // Handle For block list and item
   if (node.type === "For" && node.list) {
-    extractIdentifiers(node.list.value);
-    usedIdentifiers.add(node.item); // The loop item variable
+    extractIdentifiers(node.list);
+    usedIdentifiers.add(node.item.value);
   }
 
   // Recursively process children
   (node.children || []).forEach(collectAllIdentifiers);
+
+  // If it's a ComponentDefinition, process it and register validator
+  if (node.type === "ComponentDefinition") {
+    const { componentName, componentParams } = processComponentDefinition(node);
+    
+    componentParams.forEach(param => {
+      componentParameters.add(param);
+    });
+    
+    node.body.forEach(collectAllIdentifiers);
+  }
+  
+  // If it's the main AppElement, process its body
+  if (node.type === "App" && node.body) {
+    node.body.forEach(collectAllIdentifiers);
+  }
 }
 
 // Initial pass to collect all identifiers and bind candidates from the entire AST
-ast.forEach(collectAllIdentifiers);
-
-// Determine which bind candidates will become internal state
-const internalStates = new Map(); // varName -> initialValue for actual internal state
-bindCandidates.forEach((initialValue, varName) => {
-  const setterName = `set${capitalize(varName)}`;
-  // If the setter for a bind candidate is NOT explicitly used in the UIX
-  // (meaning it's not passed as a prop from the parent), then it should be internal state.
-  // If the setter IS used, it implies the parent is managing this state.
-  if (!usedIdentifiers.has(setterName)) {
-     internalStates.set(varName, initialValue);
-  }
-});
-
-
-// Converts a props object to JSX string
-function renderProps(props, nodeType) { // Pass nodeType to allow special handling
-  const safeProps = props || {};
-  const jsxProps = [];
-
-  // Track if a 'bind' prop was found for this element
-  let bindVarName = null;
-  if (nodeType === 'Input' && safeProps.bind && typeof safeProps.bind === 'object' && safeProps.bind.type === 'expression') {
-    bindVarName = safeProps.bind.value;
-  }
-
-  for (const [key, value] of Object.entries(safeProps)) {
-    // Skip internal compiler props like 'bind', 'initial', 'bindDefault'
-    if (["bind", "initial", "bindDefault", "text"].includes(key)) {
-      continue;
-    }
-
-    // If this is an Input with a 'bind' prop, we handle 'value' and 'onChange' specifically
-    if (nodeType === 'Input' && bindVarName && (key === 'value' || key === 'onChange')) {
-      // These will be generated by the bind logic below, so skip them here
-      continue;
-    }
-
-    // Handle event handlers (e.g., onClick, onInput)
-    if (key.startsWith("on")) {
-      if (typeof value === "object" && value !== null && value.type === "expression") {
-        extractIdentifiers(value.value);
-        jsxProps.push(`${key}={${value.value}}`);
-      } else if (typeof value === "string") {
-        extractIdentifiers(value);
-        jsxProps.push(`${key}={${value}}`);
-      } else {
-        jsxProps.push(`${key}={${JSON.stringify(value)}}`);
-      }
-    }
-    // Handle expression values from the parser
-    else if (typeof value === 'object' && value !== null && value.type === 'expression') {
-      extractIdentifiers(value.value); // Extract identifiers from the expression string
-      jsxProps.push(`${key}={${value.value}}`);
-    }
-    // Handle string literal values for other props
-    else if (typeof value === "string") {
-      jsxProps.push(`${key}=${JSON.stringify(value)}`); // Ensure string literals are quoted in JSX
-    }
-    // Handle other types (numbers, booleans, objects) by stringifying and wrapping in curly braces
-    else {
-      jsxProps.push(`${key}={${JSON.stringify(value)}}`);
-    }
-  }
-
-  // Add 'value' and 'onChange' for 'bind'ed Inputs
-  if (nodeType === 'Input' && bindVarName) {
-    const setterName = `set${capitalize(bindVarName)}`;
-    jsxProps.push(`value={${bindVarName}} onChange={e => ${setterName}(e.target.value)}`);
-  }
-
-  return jsxProps.join(" ");
-}
-
-// Generate JSX for a given AST node
-function generateJSX(node, indent = "  ") {
-  const { type, props, children } = node;
-  const childIndent = indent + "  ";
-
-  // Special handling for top-level 'App' node: its children form the main body
-  if (type === "App") {
-    return (children || []).map(c => generateJSX(c, indent)).join("\n");
-  }
-
-  // Handle 'If' blocks (conditional rendering)
-  if (type === "If") {
-    const innerChildren = children.map(c => generateJSX(c, childIndent)).join("\n");
-    return `${indent}{${node.condition.value} ? (\n${innerChildren}\n${indent}) : null}`;
-  }
-
-  // Handle 'For' blocks (list rendering)
-  if (type === "For") {
-    const innerChildren = children.map(c => generateJSX(c, childIndent + "  ")).join("\n");
-    return `${indent}{${node.list.value}.map((${node.item}, index) => (\n${childIndent}  <React.Fragment key={typeof ${node.item} === 'object' && ${node.item} !== null && 'id' in ${node.item} ? ${node.item}.id : index}>\n${innerChildren}\n${childIndent}  </React.Fragment>\n${indent}))}`;
-  }
-
-  // Handle standard elements
-  const jsxTag = tagMap[type] || type; // Translate UIX tag to HTML tag or use as-is
-  const propStr = renderProps(props, type); // Pass node type to renderProps for context
-
-  let innerContent = [];
-
-  // Handle 'text' prop for direct text content within the element
-  if (props !== null && typeof props === 'object' && props.text !== undefined) {
-    const textValue = props.text;
-    if (typeof textValue === 'object' && textValue !== null && textValue.type === 'expression') {
-      innerContent.push(`{${textValue.value}}`);
-    } else {
-      innerContent.push(textValue); // Direct text content in JSX does not need JSON.stringify
-    }
-  }
-
-  // Add children JSX after the text content
-  innerContent.push(...(children || []).map(c => generateJSX(c, childIndent)));
-
-  const inner = innerContent.filter(Boolean).join("\n");
-
-  if (inner.trim() === "") {
-    return `${indent}<${jsxTag}${propStr ? " " + propStr : ""} />`;
-  } else {
-    return `${indent}<${jsxTag}${propStr ? " " + propStr : ""}>\n${inner}\n${indent}</${jsxTag}>`;
-  }
-}
-
-// Separate component definitions from the main app body
-const componentDefinitions = ast.filter(node => node.type === "ComponentDefinition");
-const appBodyNodes = ast.filter(node => node.type !== "ComponentDefinition");
-
-let mainJsxBody = '';
-if (appBodyNodes.length > 0) {
-  // If there's an 'App' node, its children form the root JSX body
-  const appNode = appBodyNodes.find(node => node.type === 'App');
-  if (appNode) {
-    mainJsxBody = generateJSX(appNode); // This will handle its children directly
-  } else {
-    // If no 'App' node but other top-level elements, treat them as the main body
-    mainJsxBody = appBodyNodes.map(node => generateJSX(node)).join("\n");
-  }
-}
-
-// Determine which variables should be passed as props to CompiledUI
-// These are identifiers used in the main app body that are NOT internal state variables or their setters
-const propsToInject = Array.from(usedIdentifiers).filter(id => {
-  const varName = id.startsWith("set") ? id.slice(3) : id;
-  // A prop if it's used, AND it's not an internal state variable AND not an internal state setter
-  return !internalStates.has(varName) && !internalStates.has(id);
-}).sort();
-
-// Generate useState hooks for internal states
-const autoStates = Array.from(internalStates.entries())
-  .map(([varName, initialValue]) => {
-    const stateInit = typeof initialValue === 'string' && /^[a-zA-Z_$][a-zA-Z0-9_$.]*$/.test(initialValue)
-      ? initialValue
-      : JSON.stringify(initialValue);
-    return `  const [${varName}, set${capitalize(varName)}] = React.useState(${stateInit});`;
-  })
-  .join("\n");
-
-const propDestructure = propsToInject.join(", ");
-
-// Generate custom React components
-const customComponentsJsx = componentDefinitions.map(compDef => {
-  const componentName = compDef.name;
-  const componentBodyJsx = compDef.body.map(node => generateJSX(node, "    ")).join("\n"); // Indent children of component body
-
-  // For simplicity, assume component props are passed explicitly in UIX
-  // For now, components don't have their own state/prop tracking in this simple compiler.
-  // They will receive props from their parent if used.
-  return `
-function ${componentName}(props) {
-  return (
-    <>
-${componentBodyJsx}
-    </>
-  );
-}`;
-}).join("\n");
-
-
-const output = `// Auto-generated by UIX compiler
-import React from "react";
-${customComponentsJsx}
-
-export default function CompiledUI({ ${propDestructure} }) {
-${autoStates ? autoStates + "\n" : ""}
-  // IMPORTANT: Ensure that any props listed in the destructuring (e.g., 'users', 'greet', 'showMore', 'toggle')
-  // are passed down from the parent component that renders <CompiledUI />.
-  // For 'bind' targets like 'name' that are managed by the parent, ensure 'name' and 'setName' are passed.
-
-  return (
-    <>
-${mainJsxBody}
-    </>
-  );
-}
-`;
-
-fs.writeFileSync("src/CompiledUI.jsx", output);
-console.log("✅ Compiled: src/CompiledUI.jsx");
-console.log("--- START OF GENERATED JSX ---");
-console.log(output);
-console.log("--- END OF GENERATED JSX ---");
-console.log("✅ Injected props:", propDestructure || "(none)");
-if (internalStates.size > 0) {
-  console.log("✅ Injected state for:", Array.from(internalStates.keys()).join(", "));
+parsedAst.components.forEach(collectAllIdentifiers);
+if (parsedAst.app) {
+  collectAllIdentifiers(parsedAst.app);
 }
