@@ -9,10 +9,34 @@ ElementList
     }
 
 Element
+  = IfBlock
+  / ForBlock
+  / StandardElement
+
+StandardElement
   = name:Identifier _ props:Props? _ children:Block? {
       return {
         type: name,
         props: props ?? {},
+        children: children ?? []
+      };
+    }
+
+IfBlock
+  = "if" _ "(" _ cond:Identifier _ ")" _ children:Block {
+      return {
+        type: "If",
+        condition: cond,
+        children: children ?? []
+      };
+    }
+
+ForBlock
+  = "for" _ "(" _ item:Identifier _ "in" _ list:Identifier _ ")" _ children:Block {
+      return {
+        type: "For",
+        item,
+        list,
         children: children ?? []
       };
     }
@@ -52,37 +76,3 @@ Char
 
 _ "whitespace"
   = [ \t\n\r]*
-
-Element
-  = IfBlock
-  / ForBlock
-  / StandardElement
-
-StandardElement
-  = name:Identifier _ props:Props? _ children:Block? {
-      return {
-        type: name,
-        props: props ?? {},
-        children: children ?? []
-      };
-    }
-
-IfBlock
-  = "if" _ "(" _ cond:Identifier _ ")" _ children:Block {
-      return {
-        type: "If",
-        condition: cond,
-        children: children ?? []
-      };
-    }
-
-ForBlock
-  = "for" _ "(" _ item:Identifier _ "in" _ list:Identifier _ ")" _ children:Block {
-      return {
-        type: "For",
-        item,
-        list,
-        children: children ?? []
-      };
-    }
-
