@@ -5,11 +5,15 @@ export default function CompiledUI({ name, setName, greet }) {
   return (
     <>
   <div>
-    <h1 text="Hello UIX" />
-    <div>
-      <button text="Click Me" onClick={greet} />
-      <input placeholder="Enter name" value={name} onChange={e => setName(e.target.value)} />
-    </div>
+    <h1 text="User List" />
+    <For>
+      <div>
+        <Text text="user.name" />
+      </div>
+    </For>
+    <If>
+      <button text="Show More" onClick={toggle} />
+    </If>
   </div>
     </>
   );

@@ -64,7 +64,13 @@ Prop
 Value = String / Expression
 
 Expression
-  = $([a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*)
+  = first:Identifier rest:("." Identifier)* { // Redefined to explicitly match identifiers separated by dots
+      let result = first;
+      for (let i = 0; i < rest.length; i++) {
+        result += "." + rest[i][1]; // Concatenate the dot and the subsequent identifier
+      }
+      return result;
+    }
 
 Identifier
   = $([a-zA-Z_][a-zA-Z0-9_]*)

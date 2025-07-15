@@ -13,7 +13,9 @@ const ast = parser.parse(code);
 
 // Converts a props object to JSX string
 function renderProps(props) {
-  return Object.entries(props).map(([key, value]) => {
+  // Ensure props is an object, defaulting to an empty object if null or undefined
+  const safeProps = props || {};
+  return Object.entries(safeProps).map(([key, value]) => {
     if (key === "bind") {
       return `value={${value}} onChange={e => set${capitalize(value)}(e.target.value)}`;
     }
@@ -33,9 +35,9 @@ function capitalize(str) {
 
 // Generate JSX for the entire AST
 function generateJSX(node, indent = "  ") {
-  const { type, props, children } = node;
+  const { type, props, children } = node; // props can be undefined here
   const jsxTag = tagMap[type] || type; // ← translate to real tag
-  const propStr = renderProps(props);
+  const propStr = renderProps(props); // Pass props to renderProps, which will handle undefined/null
 
   if (!children || children.length === 0) {
     return `${indent}<${jsxTag}${propStr ? " " + propStr : ""} />`;
