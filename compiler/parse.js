@@ -1,6 +1,6 @@
 import fs from "fs";
 import chalk from "chalk";
-import * as parser from "./parser.js"; // use `*` to access named exports
+import * as parser from "./parser.js";
 
 const code = fs.readFileSync("uix/example.uix", "utf-8");
 

@@ -6,7 +6,7 @@ export default function App() {
   const [showMore, setShowMore] = useState(true);
   const users = [{ name: "Alice" }, { name: "Bob" }];
 
-  const greet = () => alert(`Hello, ${name}`);
+  const greet = () => alert(`Hello, ${name}!`);
   const toggle = () => setShowMore(prev => !prev);
 
   return (

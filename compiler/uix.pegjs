@@ -23,20 +23,20 @@ StandardElement
     }
 
 IfBlock
-  = "if" _ "(" _ cond:Identifier _ ")" _ children:Block {
+  = "if" _ "(" _ cond:Expression _ ")" _ children:Block { // Condition is now explicitly an Expression
       return {
         type: "If",
-        condition: cond,
+        condition: cond, // cond will be { type: 'expression', value: '...' }
         children: children ?? []
       };
     }
 
 ForBlock
-  = "for" _ "(" _ item:Identifier _ "in" _ list:Identifier _ ")" _ children:Block {
+  = "for" _ "(" _ item:Identifier _ "in" _ list:Expression _ ")" _ children:Block { // List is now explicitly an Expression
       return {
         type: "For",
         item,
-        list,
+        list: list, // list will be { type: 'expression', value: '...' }
         children: children ?? []
       };
     }
@@ -57,37 +57,20 @@ PropList
     }
 
 Prop
-  = key:Identifier _ ":" _ value:BindOrValue {
+  = key:Identifier _ ":" _ value:Value { // Value can be a String or an Expression
       return [key, value];
-    }
-
-BindOrValue
-  = "bind" _ ":" _ id:Identifier _ "=" _ val:String {
-      return { bind: id, bindDefault: val };
-    }
-  / "bind" _ ":" _ id:Identifier {
-      return { bind: id };
-    }
-  / value:Value {
-      return value;
     }
 
 Value = String / Expression
 
 Expression
-  = first:Identifier rest:("." Identifier)* { // Redefined to explicitly match identifiers separated by dots
-      let result = first;
-      for (let i = 0; i < rest.length; i++) {
-        result += "." + rest[i][1]; // Concatenate the dot and the subsequent identifier
-      }
-      return result;
-    }
+  = val:$(Identifier ("." Identifier)*) { return { type: 'expression', value: val }; } // Returns an object for expressions
 
 Identifier
   = $([a-zA-Z_][a-zA-Z0-9_]*)
 
 String
-  = "\"" chars:Char* "\"" { return chars.join(""); }
+  = "\"" chars:Char* "\"" { return chars.join(""); } // Returns a plain string for literals
 
 Char
   = '\\"'  { return '"'; }

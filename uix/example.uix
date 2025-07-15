@@ -9,7 +9,7 @@ App {
 
   Input(bind: name)
 
-  Button(text: "Greet", onClick: greet)
+Button(text: "Greet", onClick: greet)
 
   if (showMore) {
     Button(text: "Show More", onClick: toggle)
