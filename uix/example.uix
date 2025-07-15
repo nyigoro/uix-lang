@@ -1,13 +1,17 @@
 App {
   Title(text: "User List")
 
-  for(user in users) {
+  for (user in users) {
     Row {
       Text(text: user.name)
     }
   }
 
-  if(showMore) {
+  Input(bind: name)
+
+  Button(text: "Greet", onClick: greet)
+
+  if (showMore) {
     Button(text: "Show More", onClick: toggle)
   }
 }

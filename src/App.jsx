@@ -17,6 +17,7 @@ export default function App() {
         showMore={showMore}
         toggle={toggle}
         users={users}
+        greet={greet}
       />
     </div>
   );
