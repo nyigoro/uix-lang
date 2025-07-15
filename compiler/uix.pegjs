@@ -66,6 +66,9 @@ Value = String / Expression
 Expression
   = $([a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*)
 
+Identifier
+  = $([a-zA-Z_][a-zA-Z0-9_]*)
+
 String
   = "\"" chars:Char* "\"" { return chars.join(""); }
 
