@@ -57,8 +57,19 @@ PropList
     }
 
 Prop
-  = key:Identifier _ ":" _ value:Value {
+  = key:Identifier _ ":" _ value:BindOrValue {
       return [key, value];
+    }
+
+BindOrValue
+  = "bind" _ ":" _ id:Identifier _ "=" _ val:String {
+      return { bind: id, bindDefault: val };
+    }
+  / "bind" _ ":" _ id:Identifier {
+      return { bind: id };
+    }
+  / value:Value {
+      return value;
     }
 
 Value = String / Expression
