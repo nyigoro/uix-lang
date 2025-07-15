@@ -1,0 +1,7 @@
+App {
+  Title(text: "Hello UIX")
+  Row {
+    Button(text: "Click Me", onClick: greet)
+    Input(placeholder: "Enter name", bind: name)
+  }
+}
