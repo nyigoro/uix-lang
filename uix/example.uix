@@ -1,17 +1,10 @@
 App {
-  Title(text: "User List")
+  UserCard(name: "Alice")
+  UserCard(name: "Bob")
+}
 
-  for (user in users) {
-    Row {
-      Text(text: user.name)
-    }
-  }
-
-  Input(bind: name)
-
-Button(text: "Greet", onClick: greet)
-
-  if (showMore) {
-    Button(text: "Show More", onClick: toggle)
+component UserCard(name) {
+  Row {
+    Text(text: name)
   }
 }

@@ -1,11 +1,24 @@
 Start
-  = _ elements:ElementList? _ {
-      return elements ?? [];
+  = _ items:(ComponentDefinition / AppElement)* _ {
+      // Separate components and app element after parsing
+      const components = items.filter(item => item.type === "ComponentDefinition");
+      const app = items.find(item => item.type === "App");
+      return { components: components, app: app };
     }
 
-ElementList
-  = head:Element tail:(_ Element)* {
-      return [head, ...tail.map(t => t[1])];
+ComponentDefinition
+  = "component" _ name:Identifier _ "(" params:ParameterList? ")" _ body:Block {
+      return { type: "ComponentDefinition", name: name, params: params ?? [], body: body };
+    }
+
+ParameterList
+  = head:Identifier tail:(_ "," _ Identifier)* {
+      return [head, ...tail.map(t => t[3])];
+    }
+
+AppElement "App"
+  = "App" _ body:Block {
+      return { type: "App", body: body };
     }
 
 Element
@@ -15,6 +28,12 @@ Element
 
 StandardElement
   = name:Identifier _ props:Props? _ children:Block? {
+      // Ensure 'App' is not matched here, as it's now AppElement
+      if (name === "App") {
+        // This error should ideally not be hit if AppElement is correctly parsed at top-level
+        // but acts as a safeguard.
+        error("Unexpected 'App' element here. 'App' should be a top-level declaration.");
+      }
       return {
         type: name,
         props: props ?? {},
@@ -23,20 +42,20 @@ StandardElement
     }
 
 IfBlock
-  = "if" _ "(" _ cond:Expression _ ")" _ children:Block { // Condition is now explicitly an Expression
+  = "if" _ "(" _ cond:Expression _ ")" _ children:Block {
       return {
         type: "If",
-        condition: cond, // cond will be { type: 'expression', value: '...' }
+        condition: cond,
         children: children ?? []
       };
     }
 
 ForBlock
-  = "for" _ "(" _ item:Identifier _ "in" _ list:Expression _ ")" _ children:Block { // List is now explicitly an Expression
+  = "for" _ "(" _ item:Identifier _ "in" _ list:Expression _ ")" _ children:Block {
       return {
         type: "For",
         item,
-        list: list, // list will be { type: 'expression', value: '...' }
+        list: list,
         children: children ?? []
       };
     }
@@ -44,6 +63,11 @@ ForBlock
 Block
   = "{" _ elements:ElementList? _ "}" {
       return elements ?? [];
+    }
+
+ElementList
+  = head:Element tail:(_ Element)* {
+      return [head, ...tail.map(t => t[1])];
     }
 
 Props
@@ -57,20 +81,20 @@ PropList
     }
 
 Prop
-  = key:Identifier _ ":" _ value:Value { // Value can be a String or an Expression
+  = key:Identifier _ ":" _ value:Value {
       return [key, value];
     }
 
 Value = String / Expression
 
 Expression
-  = val:$(Identifier ("." Identifier)*) { return { type: 'expression', value: val }; } // Returns an object for expressions
+  = val:$(Identifier ("." Identifier)*) { return { type: 'expression', value: val }; }
 
 Identifier
   = $([a-zA-Z_][a-zA-Z0-9_]*)
 
 String
-  = "\"" chars:Char* "\"" { return chars.join(""); } // Returns a plain string for literals
+  = "\"" chars:Char* "\"" { return chars.join(""); }
 
 Char
   = '\\"'  { return '"'; }

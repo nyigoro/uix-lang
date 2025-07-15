@@ -3,7 +3,7 @@ import * as parser from "./parser.js";
 
 const code = fs.readFileSync("uix/example.uix", "utf-8");
 const tagMap = {
-  App: "div",
+  App: "div", // This mapping for 'App' is now primarily for internal reference, not direct JSX tag generation for the root.
   Title: "h1",
   Row: "div",
   Button: "button",
@@ -18,12 +18,9 @@ const ast = parser.parse(code);
 
 // Tracking
 const usedIdentifiers = new Set();
-// This map will temporarily store all variables targeted by 'bind' directives
-// It does NOT mean they will become internal state yet.
-const bindCandidates = new Map(); // Stores varName -> initialValue
+const bindCandidates = new Map(); // Stores varName -> initialValue for all 'bind' targets found in AST
 
 function capitalize(str) {
-  // Ensure str is a string before capitalizing
   if (typeof str === "object" && str !== null && str.type === "expression") {
     str = str.value;
   }
@@ -31,7 +28,6 @@ function capitalize(str) {
 }
 
 function extractIdentifiers(value) {
-  // Ensure value is a string before attempting regex match
   if (typeof value === "object" && value !== null && value.type === "expression") {
     value = value.value;
   }
@@ -41,122 +37,101 @@ function extractIdentifiers(value) {
   }
 }
 
-// Function to recursively collect all bind candidates from the AST
-function collectBindCandidatesFromAST(node) {
+// Function to recursively collect all bind candidates and used identifiers from the AST
+function collectAllIdentifiers(node) {
   if (!node) return;
 
-  // Check for 'bind' prop on the current node
+  // Handle props for standard elements
   if (node.props) {
     for (const [key, value] of Object.entries(node.props)) {
       if (key === "bind") {
         if (typeof value === 'object' && value !== null && value.type === 'expression') {
           const varName = value.value;
-          // Validate bind target is a simple identifier
-          if (/^[a-zA-Z_$][a-zA-Z0-9_]*$/.test(varName)) {
+          if (/^[a-zA-Z_$][a-zA-Z0-9_]*$/.test(varName)) { // Ensure it's a simple identifier
             const initialValue = node.props.initial !== undefined
               ? (typeof node.props.initial === 'object' && node.props.initial !== null && node.props.initial.type === 'expression' ? node.props.initial.value : node.props.initial)
               : "";
             bindCandidates.set(varName, initialValue);
-            // Also mark the bind target and its setter as used identifiers
-            usedIdentifiers.add(varName);
-            usedIdentifiers.add(`set${capitalize(varName)}`);
+            usedIdentifiers.add(varName); // Mark the variable itself as used
+            usedIdentifiers.add(`set${capitalize(varName)}`); // Mark its setter as used
           } else {
-            console.warn(`Warning: 'bind' prop requires a simple identifier string. Found: '${varName}'. This input might be uncontrolled.`);
+            console.warn(`Warning: 'bind' prop requires a simple identifier string. Found: '${varName}'.`);
           }
-        } else {
-          console.warn(`Warning: 'bind' prop value must be an expression. Found: ${JSON.stringify(value)}. Ignoring bind.`);
+        }
+      } else if (key !== "text" && key !== "initial" && key !== "bindDefault") { // 'text', 'initial', 'bindDefault' are handled elsewhere or internal
+        // For other props, if they are expressions, extract their identifiers
+        if (typeof value === 'object' && value !== null && value.type === 'expression') {
+          extractIdentifiers(value.value);
+        } else if (typeof value === 'string' && key.startsWith("on")) {
+          // For simple string event handlers like onClick: greet, extract 'greet'
+          extractIdentifiers(value);
         }
       }
     }
   }
 
-  // Recursively process children
-  (node.children || []).forEach(collectBindCandidatesFromAST);
-
-  // Recursively process conditions and lists for If/For blocks
+  // Handle If block condition
   if (node.type === "If" && node.condition) {
-    extractIdentifiers(node.condition.value); // Ensure condition identifier is tracked
-    collectBindCandidatesFromAST(node.condition); // Not strictly needed as condition is expression, but for consistency
+    extractIdentifiers(node.condition.value);
   }
+
+  // Handle For block list and item
   if (node.type === "For" && node.list) {
-    extractIdentifiers(node.list.value); // Ensure list identifier is tracked
-    collectBindCandidatesFromAST(node.list); // Not strictly needed
-    usedIdentifiers.add(node.item); // Ensure loop item is tracked
+    extractIdentifiers(node.list.value);
+    usedIdentifiers.add(node.item); // The loop item variable
   }
+
+  // Recursively process children
+  (node.children || []).forEach(collectAllIdentifiers);
 }
 
-// Initial pass to populate bindCandidates and usedIdentifiers
-ast.forEach(collectBindCandidatesFromAST);
+// Initial pass to collect all identifiers and bind candidates from the entire AST
+ast.forEach(collectAllIdentifiers);
 
-
-// Now, determine which of the bindCandidates should be internal state
-// and which should be treated as props (because they are passed by the parent).
+// Determine which bind candidates will become internal state
 const internalStates = new Map(); // varName -> initialValue for actual internal state
-
 bindCandidates.forEach((initialValue, varName) => {
   const setterName = `set${capitalize(varName)}`;
-  // If the variable name OR its setter are NOT explicitly listed in the propsToInject,
-  // then it means they are not being passed down from the parent, so they should be internal state.
-  // We determine propsToInject *after* this, so we need to rely on `usedIdentifiers`
-  // and the assumption that if `setName` is used, it's a prop.
-  if (usedIdentifiers.has(varName) && usedIdentifiers.has(setterName)) {
-    // If both the variable and its setter are used, assume they are props
-    // Do NOT add to internalStates
-  } else {
-    // Otherwise, it's internal state
-    internalStates.set(varName, initialValue);
+  // If the setter for a bind candidate is NOT explicitly used in the UIX
+  // (meaning it's not passed as a prop from the parent), then it should be internal state.
+  // If the setter IS used, it implies the parent is managing this state.
+  if (!usedIdentifiers.has(setterName)) {
+     internalStates.set(varName, initialValue);
   }
 });
 
 
 // Converts a props object to JSX string
-function renderProps(props) {
+function renderProps(props, nodeType) { // Pass nodeType to allow special handling
   const safeProps = props || {};
   const jsxProps = [];
 
+  // Track if a 'bind' prop was found for this element
+  let bindVarName = null;
+  if (nodeType === 'Input' && safeProps.bind && typeof safeProps.bind === 'object' && safeProps.bind.type === 'expression') {
+    bindVarName = safeProps.bind.value;
+  }
+
   for (const [key, value] of Object.entries(safeProps)) {
-    // Skip internal compiler props
-    if (key === "bind" || key === "initial" || key === "bindDefault") {
+    // Skip internal compiler props like 'bind', 'initial', 'bindDefault'
+    if (["bind", "initial", "bindDefault", "text"].includes(key)) {
       continue;
     }
 
-    // 'text' prop is handled in generateJSX for inner content
-    if (key === "text") {
+    // If this is an Input with a 'bind' prop, we handle 'value' and 'onChange' specifically
+    if (nodeType === 'Input' && bindVarName && (key === 'value' || key === 'onChange')) {
+      // These will be generated by the bind logic below, so skip them here
       continue;
-    }
-
-    // Handle 'bind' related props for Input elements
-    // This logic is now handled by the `internalStates` map and `propsToInject`
-    // So, if the key is 'value' or 'onChange' and it corresponds to a bind target,
-    // we generate it here based on whether it's an internal state or a prop.
-    // This part needs to be careful not to double-process.
-
-    // If this prop is for a variable that is determined to be internal state:
-    if (internalStates.has(key)) { // e.g., if 'name' is internal state
-        // This case should ideally not happen if 'bind' is handled correctly,
-        // as 'value' and 'onChange' are generated directly from the bind logic.
-        // But as a fallback, ensure it's not treated as a regular prop.
-        continue;
     }
 
     // Handle event handlers (e.g., onClick, onInput)
     if (key.startsWith("on")) {
       if (typeof value === "object" && value !== null && value.type === "expression") {
         extractIdentifiers(value.value);
-        // Special handling for 'greet' function: call it without arguments
-        // as it closes over parent's state.
-        if (value.value === 'greet') {
-          jsxProps.push(`${key}={greet}`); // Simply pass the function reference
-        } else {
-          jsxProps.push(`${key}={${value.value}}`);
-        }
+        jsxProps.push(`${key}={${value.value}}`);
       } else if (typeof value === "string") {
         extractIdentifiers(value);
-        if (value === 'greet') {
-          jsxProps.push(`${key}={greet}`); // Simply pass the function reference
-        } else {
-          jsxProps.push(`${key}={${value}}`);
-        }
+        jsxProps.push(`${key}={${value}}`);
       } else {
         jsxProps.push(`${key}={${JSON.stringify(value)}}`);
       }
@@ -176,63 +151,49 @@ function renderProps(props) {
     }
   }
 
+  // Add 'value' and 'onChange' for 'bind'ed Inputs
+  if (nodeType === 'Input' && bindVarName) {
+    const setterName = `set${capitalize(bindVarName)}`;
+    jsxProps.push(`value={${bindVarName}} onChange={e => ${setterName}(e.target.value)}`);
+  }
+
   return jsxProps.join(" ");
 }
 
-// Generate JSX for the entire AST
+// Generate JSX for a given AST node
 function generateJSX(node, indent = "  ") {
   const { type, props, children } = node;
-  const childIndent = indent + "  "; // Deeper indent for children
+  const childIndent = indent + "  ";
+
+  // Special handling for top-level 'App' node: its children form the main body
+  if (type === "App") {
+    return (children || []).map(c => generateJSX(c, indent)).join("\n");
+  }
 
   // Handle 'If' blocks (conditional rendering)
   if (type === "If") {
-    // node.condition is now { type: 'expression', value: '...' }
-    extractIdentifiers(node.condition.value); // Track the condition variable
     const innerChildren = children.map(c => generateJSX(c, childIndent)).join("\n");
-    // Generate a ternary operator for conditional rendering
     return `${indent}{${node.condition.value} ? (\n${innerChildren}\n${indent}) : null}`;
   }
 
   // Handle 'For' blocks (list rendering)
   if (type === "For") {
-    // node.list is now { type: 'expression', value: '...' }
-    extractIdentifiers(node.list.value); // Track the list variable
-    usedIdentifiers.add(node.item); // Track the loop item variable
-    const innerChildren = children.map(c => generateJSX(c, childIndent + "  ")).join("\n"); // Extra indent for children inside map
-    // Generate a list.map() function for rendering items
+    const innerChildren = children.map(c => generateJSX(c, childIndent + "  ")).join("\n");
     return `${indent}{${node.list.value}.map((${node.item}, index) => (\n${childIndent}  <React.Fragment key={typeof ${node.item} === 'object' && ${node.item} !== null && 'id' in ${node.item} ? ${node.item}.id : index}>\n${innerChildren}\n${childIndent}  </React.Fragment>\n${indent}))}`;
   }
 
   // Handle standard elements
   const jsxTag = tagMap[type] || type; // Translate UIX tag to HTML tag or use as-is
-
-  // Special handling for Input with 'bind'
-  let specialInputProps = '';
-  if (type === 'Input' && props && props.bind && typeof props.bind === 'object' && props.bind.type === 'expression') {
-    const varName = props.bind.value;
-    const setterName = `set${capitalize(varName)}`;
-    if (internalStates.has(varName)) {
-      // It's internal state
-      specialInputProps = `value={${varName}} onChange={e => ${setterName}(e.target.value)}`;
-    } else {
-      // It's a prop
-      specialInputProps = `value={${varName}} onChange={e => ${setterName}(e.target.value)}`;
-    }
-  }
-
-  const propStr = renderProps(props); // Get the string of JSX attributes
+  const propStr = renderProps(props, type); // Pass node type to renderProps for context
 
   let innerContent = [];
+
   // Handle 'text' prop for direct text content within the element
-  if (props !== null && typeof props === 'object' && props.text !== undefined) { // Check for props and props.text safely
+  if (props !== null && typeof props === 'object' && props.text !== undefined) {
     const textValue = props.text;
-    // If textValue is an expression object from the parser (e.g., { type: 'expression', value: 'user.name' })
     if (typeof textValue === 'object' && textValue !== null && textValue.type === 'expression') {
-      extractIdentifiers(textValue.value); // Track the identifier
       innerContent.push(`{${textValue.value}}`);
     } else {
-      // If textValue is a plain string literal from the parser (e.g., "Hello World")
-      // No need to call extractIdentifiers for literal strings
       innerContent.push(textValue); // Direct text content in JSX does not need JSON.stringify
     }
   }
@@ -240,95 +201,92 @@ function generateJSX(node, indent = "  ") {
   // Add children JSX after the text content
   innerContent.push(...(children || []).map(c => generateJSX(c, childIndent)));
 
-  const inner = innerContent.filter(Boolean).join("\n"); // Filter out empty strings/nulls and join
+  const inner = innerContent.filter(Boolean).join("\n");
 
-  // Combine generated props and special input props
-  const finalPropString = [propStr, specialInputProps].filter(Boolean).join(" ");
-
-  // Determine if it's a self-closing tag or has children/text content
   if (inner.trim() === "") {
-    return `${indent}<${jsxTag}${finalPropString ? " " + finalPropString : ""} />`;
+    return `${indent}<${jsxTag}${propStr ? " " + propStr : ""} />`;
   } else {
-    return `${indent}<${jsxTag}${finalPropString ? " " + finalPropString : ""}>\n${inner}\n${indent}</${jsxTag}>`;
+    return `${indent}<${jsxTag}${propStr ? " " + propStr : ""}>\n${inner}\n${indent}</${jsxTag}>`;
   }
 }
 
-// Generate the main JSX body from the AST
-const jsxBody = ast.map(node => generateJSX(node)).join("\n");
+// Separate component definitions from the main app body
+const componentDefinitions = ast.filter(node => node.type === "ComponentDefinition");
+const appBodyNodes = ast.filter(node => node.type !== "ComponentDefinition");
+
+let mainJsxBody = '';
+if (appBodyNodes.length > 0) {
+  // If there's an 'App' node, its children form the root JSX body
+  const appNode = appBodyNodes.find(node => node.type === 'App');
+  if (appNode) {
+    mainJsxBody = generateJSX(appNode); // This will handle its children directly
+  } else {
+    // If no 'App' node but other top-level elements, treat them as the main body
+    mainJsxBody = appBodyNodes.map(node => generateJSX(node)).join("\n");
+  }
+}
 
 // Determine which variables should be passed as props to CompiledUI
-// Filter out internal states and their setters
+// These are identifiers used in the main app body that are NOT internal state variables or their setters
 const propsToInject = Array.from(usedIdentifiers).filter(id => {
-  const varName = id.startsWith("set") ? id.slice(3) : id; // Get base var name from setter
-  const isInternalStateVar = internalStates.has(varName);
-  const isInternalStateSetter = id.startsWith("set") && internalStates.has(varName);
-  return !isInternalStateVar && !isInternalStateSetter;
-}).sort(); // Sort for consistent output
+  const varName = id.startsWith("set") ? id.slice(3) : id;
+  // A prop if it's used, AND it's not an internal state variable AND not an internal state setter
+  return !internalStates.has(varName) && !internalStates.has(id);
+}).sort();
 
 // Generate useState hooks for internal states
 const autoStates = Array.from(internalStates.entries())
   .map(([varName, initialValue]) => {
-    // If initialValue is a string that looks like an identifier/expression, use it directly.
-    // Otherwise, stringify it for literal values (e.g., "hello", 123, true).
     const stateInit = typeof initialValue === 'string' && /^[a-zA-Z_$][a-zA-Z0-9_$.]*$/.test(initialValue)
-      ? initialValue // It's an expression/identifier, use directly (e.g., 'someInitialVar')
-      : JSON.stringify(initialValue); // It's a literal string or other type, stringify (e.g., '"Hello"', '123')
+      ? initialValue
+      : JSON.stringify(initialValue);
     return `  const [${varName}, set${capitalize(varName)}] = React.useState(${stateInit});`;
   })
   .join("\n");
 
 const propDestructure = propsToInject.join(", ");
 
-// Final React component wrapper
+// Generate custom React components
+const customComponentsJsx = componentDefinitions.map(compDef => {
+  const componentName = compDef.name;
+  const componentBodyJsx = compDef.body.map(node => generateJSX(node, "    ")).join("\n"); // Indent children of component body
+
+  // For simplicity, assume component props are passed explicitly in UIX
+  // For now, components don't have their own state/prop tracking in this simple compiler.
+  // They will receive props from their parent if used.
+  return `
+function ${componentName}(props) {
+  return (
+    <>
+${componentBodyJsx}
+    </>
+  );
+}`;
+}).join("\n");
+
+
 const output = `// Auto-generated by UIX compiler
 import React from "react";
+${customComponentsJsx}
 
 export default function CompiledUI({ ${propDestructure} }) {
 ${autoStates ? autoStates + "\n" : ""}
-  // IMPORTANT: Ensure that any props like 'greet', 'users', 'showMore', 'toggle',
-  // and any 'bind' targets that are managed by the parent (e.g., 'name', 'setName')
+  // IMPORTANT: Ensure that any props listed in the destructuring (e.g., 'users', 'greet', 'showMore', 'toggle')
   // are passed down from the parent component that renders <CompiledUI />.
-  //
-  // Example in your App.jsx:
-  // import React, { useState } from 'react';
-  // import CompiledUI from './CompiledUI.jsx';
-  //
-  // function App() {
-  //   const [name, setName] = useState(""); // State for the input, managed by App
-  //   const [showMore, setShowMore] = useState(true);
-  //   const users = [{ name: "Alice" }, { name: "Bob" }];
-  //
-  //   const greet = () => alert(\`Hello, \${name}\`); // greet uses App's 'name' via closure
-  //   const toggle = () => setShowMore(prev => !prev);
-  //
-  //   return (
-  //     <div style={{ fontFamily: "sans-serif", padding: 24 }}>
-  //       <CompiledUI
-  //         name={name} // Pass name as prop
-  //         setName={setName} // Pass setName as prop
-  //         showMore={showMore}
-  //         toggle={toggle}
-  //         users={users}
-  //         greet={greet} // Pass greet as prop
-  //       />
-  //     </div>
-  //   );
-  // }
-  // export default App;
+  // For 'bind' targets like 'name' that are managed by the parent, ensure 'name' and 'setName' are passed.
 
   return (
     <>
-${jsxBody}
+${mainJsxBody}
     </>
   );
 }
 `;
 
-// Write the compiled JSX to a file
 fs.writeFileSync("src/CompiledUI.jsx", output);
 console.log("✅ Compiled: src/CompiledUI.jsx");
 console.log("--- START OF GENERATED JSX ---");
-console.log(output); // Log the full generated output for debugging
+console.log(output);
 console.log("--- END OF GENERATED JSX ---");
 console.log("✅ Injected props:", propDestructure || "(none)");
 if (internalStates.size > 0) {
